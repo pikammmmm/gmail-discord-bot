@@ -1,8 +1,15 @@
 # Secrets - NEVER commit these
 .env
+.env.*
+!.env.example
 credentials.json
+client_secret*.json
 token.json
 seen_ids.json
+
+# Runtime logs
+bot.log
+*.log
 
 # Python
 __pycache__/

@@ -1,90 +1,141 @@
-# Gmail → Discord Forwarder
+# Gmail → Discord Bot (with Reply button)
 
-A tiny Python script that watches your Gmail inbox and posts new messages to a Discord channel as rich embeds. Uses a Discord **webhook** (not a full bot), so there's no bot hosting to manage — just a URL that receives messages.
+A Python Discord bot that watches your Gmail inbox and posts new messages to a Discord channel as rich embeds. Each forwarded email includes a **Reply** button — click it, type your response in the popup, and the bot sends a properly threaded reply straight from your Gmail account.
 
 ```
-📧 Gmail inbox ──(poll every 60s)──▶  Python script  ──(POST embed)──▶  💬 Discord channel
+📧 Gmail inbox ──(poll every 60s)──▶  Python bot  ──(embed + Reply button)──▶  💬 Discord channel
+                                         ▲                                            │
+                                         │                                            │ click Reply
+                                         │                                            ▼
+                                         │                                      📝 modal popup
+                                         │                                            │
+                                         └──────── send threaded reply ◀──────────────┘
 ```
 
 ---
 
-## What you'll get
+## What you get
 
-For every new email, a nicely formatted Discord message:
-
-- **Title:** email subject
-- **Description:** preview snippet
-- **From:** sender name + address
-- **Footer:** date
-
-The script marks your existing inbox as "seen" on first run, so you won't get spammed with 500 old emails when you start it.
+- New emails appear in Discord within ~60 seconds as blue embeds (subject, sender, preview, date)
+- A **Reply** button on every message
+- Clicking Reply opens a Discord popup with a single body field — the subject is auto-set to `Re: [original]`
+- Sending posts the reply into the **same Gmail thread**, so the other person sees a real reply, not a new email
+- First run marks your current inbox as "seen", so it won't spam you with historical mail
+- Everything is logged to `bot.log` so you can check what happened even when running headless
 
 ---
 
-## Setup (≈ 10 minutes, all free)
+## Setup (about 15 minutes, all free)
 
 ### 1. Install Python dependencies
 
-From this folder, in a terminal:
-
 ```bash
+git clone https://github.com/<your-username>/gmail-discord-bot.git
+cd gmail-discord-bot
 python -m venv .venv
-# Windows (Git Bash / WSL):
-source .venv/Scripts/activate
-# Windows (PowerShell):
-.venv\Scripts\Activate.ps1
-
+.venv\Scripts\activate          # Windows PowerShell / CMD
+# source .venv/bin/activate     # macOS / Linux
 pip install -r requirements.txt
 ```
 
-### 2. Create a Discord webhook
+### 2. Create your Discord bot (new!)
 
-1. Open Discord and go to the server where you want emails to land.
-   (If you don't have one, create a private server — takes 10 seconds.)
-2. **Server Settings → Integrations → Webhooks → New Webhook**
-3. Pick the channel, give it a name like "Gmail", and click **Copy Webhook URL**.
-4. Keep that URL — you'll paste it into `.env` in step 4.
+Unlike webhooks, buttons require a real bot with a token.
 
-> Want emails sent as a **DM** to yourself instead? Discord webhooks only post to channels, so make a personal server with one "Gmail" channel — that's the standard trick.
+1. Go to <https://discord.com/developers/applications>
+2. **New Application** → give it a name like `Gmail Bot` → **Create**
+3. Left sidebar → **Bot**
+4. Under **Privileged Gateway Intents**, leave all toggles OFF — we don't need any privileged intents
+5. Under the bot username, click **Reset Token** → **Yes, do it** → **Copy**
+   - ⚠️ Treat this like a password. Anyone with it can control your bot.
+6. Left sidebar → **OAuth2 → URL Generator**
+7. **Scopes:** check `bot` and `applications.commands`
+8. **Bot Permissions:** check `Send Messages`, `Embed Links`, `Read Message History`
+9. Copy the **Generated URL** at the bottom of the page → paste it in your browser
+10. Pick the server where you want the bot → **Authorize**
 
-### 3. Get Gmail API credentials
+The bot should now appear (offline) in your server's member list.
 
-1. Go to <https://console.cloud.google.com/>
-2. Create a new project (top bar → "New Project"). Name it anything.
-3. Enable the Gmail API: **APIs & Services → Library** → search "Gmail API" → **Enable**
-4. Configure the OAuth consent screen: **APIs & Services → OAuth consent screen**
-   - User type: **External**
-   - App name: anything (e.g., "Gmail Discord Forwarder")
-   - Fill in required email fields with your own email
-   - On **Scopes**: you can skip adding scopes here, the script declares what it needs
-   - On **Test users**: add your own Gmail address — this is important!
-5. Create credentials: **APIs & Services → Credentials → Create Credentials → OAuth client ID**
-   - Application type: **Desktop app**
-   - Name: anything
-   - Click **Create**, then **Download JSON**
-6. Rename the downloaded file to `credentials.json` and place it in this folder (next to `gmail_to_discord.py`).
+### 3. Decide where the bot should send emails
 
-### 4. Create your `.env` file
+You have two options — pick one (or set both; DM mode wins if both are set).
 
-Copy the template and fill in the webhook URL:
+**Option A — DM mode (recommended).** The bot slides every email into your personal Discord DMs.
+1. In Discord: **User Settings → Advanced → Developer Mode** (turn it ON).
+2. Right-click your **own profile** in any server → **Copy User ID**.
+3. You'll paste this as `DM_USER_ID` in step 5.
+4. Make sure you share at least one server with the bot (you already do from step 2) **and** that your DM privacy settings allow messages from server members.
+
+**Option B — Channel mode.** The bot posts into a server channel.
+1. Turn on Developer Mode as above.
+2. Right-click the target channel → **Copy Channel ID**.
+3. You'll paste this as `DISCORD_CHANNEL_ID` in step 5.
+
+### 4. Get Gmail API credentials
+
+1. <https://console.cloud.google.com/> → create or select a project.
+2. **APIs & Services → Library** → search **Gmail API** → **Enable**.
+3. **APIs & Services → OAuth consent screen** → **External** → fill in the required fields → add your own Gmail address under **Test users**.
+4. **APIs & Services → Credentials → Create Credentials → OAuth client ID** → application type **Desktop app** → **Create** → **Download JSON**.
+5. Rename the downloaded file to `credentials.json` and put it next to `gmail_to_discord.py`.
+
+### 5. Fill in `.env`
+
+Copy the template:
 
 ```bash
 cp .env.example .env
 ```
 
-Open `.env` in a text editor and paste your webhook URL into `DISCORD_WEBHOOK_URL=`.
+Open `.env` in any text editor and fill in the values you collected:
 
-### 5. Run it
+```env
+DISCORD_BOT_TOKEN=the token you copied in step 2
+
+# Pick one (or both — DM_USER_ID wins if both are set)
+DM_USER_ID=your own Discord user ID (Option A)
+DISCORD_CHANNEL_ID=the channel ID (Option B)
+
+POLL_INTERVAL_SECONDS=60
+```
+
+> If you're upgrading from an older version that only had the `gmail.readonly` scope, delete `token.json` so the next run re-authenticates with the new `gmail.send` scope:
+>
+> ```powershell
+> Remove-Item .\token.json -ErrorAction SilentlyContinue
+> ```
+
+### 6. Run it
 
 ```bash
 python gmail_to_discord.py
 ```
 
-- The **first run** will open a browser window asking you to sign into Google and approve read-only access to Gmail. Because the app is in "testing" mode, you'll see a "Google hasn't verified this app" warning — click **Advanced → Go to [app name] (unsafe)**. It's your own app, so it's fine.
-- After approval, a `token.json` file is saved so you won't have to sign in again.
-- The script will mark your current inbox as "seen" and start polling. Send yourself a test email to verify.
+First run:
+- A browser window opens asking you to sign into Google
+- You'll see "Google hasn't verified this app" → **Advanced → Go to [app name] (unsafe)** → **Continue**
+- You'll be asked to grant **two** permissions: read Gmail **and** send mail as you
+- Close the browser tab when done
+- The bot connects to Discord — you'll see it come online in your server
+
+Send yourself a test email, wait up to 60 seconds, and the embed should show up in your channel with a **Reply** button.
 
 Press **Ctrl+C** to stop.
+
+---
+
+## Using the Reply button
+
+1. Click **📨 Reply** on any forwarded email
+2. A popup appears with a single text area
+3. Type your reply → click **Submit**
+4. The bot confirms with an ephemeral message (only you can see it)
+5. Check your Gmail — the reply is in the same thread as the original email
+
+The reply:
+- Is sent **from your Gmail address** as a real email
+- Is properly threaded via `In-Reply-To` / `References` headers
+- Uses `Re: [original subject]` automatically
 
 ---
 
@@ -92,62 +143,88 @@ Press **Ctrl+C** to stop.
 
 | File | Purpose |
 |---|---|
-| `gmail_to_discord.py` | The main script |
+| `gmail_to_discord.py` | The bot (polling + Reply button + modal + Gmail send) |
 | `requirements.txt` | Python dependencies |
 | `.env.example` | Template for secrets (real `.env` is gitignored) |
-| `.gitignore` | Keeps secrets and state files out of git |
+| `.gitignore` | Keeps secrets, token, and logs out of git |
+| `run_bot.bat` | Double-click launcher (visible window, good for debugging) |
 | `README.md` | This file |
 
-These files are created at runtime and are **not** committed:
+Runtime-only (not in git):
 
 | File | Purpose |
 |---|---|
-| `.env` | Your Discord webhook URL |
-| `credentials.json` | Your Google OAuth client (download from Cloud Console) |
+| `.env` | Your bot token + DM user ID / channel ID |
+| `credentials.json` | OAuth client from Google Cloud |
 | `token.json` | Saved OAuth token after first sign-in |
-| `seen_ids.json` | Message IDs already forwarded, so you don't get duplicates |
+| `seen_ids.json` | Message IDs already forwarded, to prevent duplicates |
+| `bot.log` | Runtime log, auto-truncated at ~500 KB |
 
 ---
 
-## Config
+## Running it in the background on startup (Windows)
 
-All config lives in `.env`:
+To make the bot launch silently every time you log into Windows:
 
-- `DISCORD_WEBHOOK_URL` — required
-- `POLL_INTERVAL_SECONDS` — how often to check Gmail (default `60`, minimum `10`)
+1. Press `Win + R`, type `shell:startup`, press Enter — this opens your user Startup folder.
+2. Right-click in the folder → **New → Shortcut**.
+3. Paste the full path to `pythonw.exe` inside your venv, for example:
+   ```
+   C:\path\to\gmail-discord-bot\.venv\Scripts\pythonw.exe
+   ```
+4. Click **Next**, name it `Gmail-Discord Bot`, click **Finish**.
+5. Right-click the new shortcut → **Properties**:
+   - **Target**: append a space and `gmail_to_discord.py` at the end
+   - **Start in**: set this to the project folder (e.g. `C:\path\to\gmail-discord-bot`)
+   - Click **OK**
+6. Double-click the shortcut once to verify it starts (you won't see a window — that's the point).
+
+Useful commands once it's running in the background:
+
+```powershell
+# Is the bot alive?
+Get-Process pythonw -ErrorAction SilentlyContinue
+
+# See the latest log entries
+Get-Content .\bot.log -Tail 20
+
+# Restart after editing code (run from the project folder)
+Stop-Process -Name pythonw -ErrorAction SilentlyContinue
+Start-Process ".\.venv\Scripts\pythonw.exe" -ArgumentList "gmail_to_discord.py"
+```
+
+> On macOS/Linux, use `launchd` / `systemd --user` / a `cron @reboot` entry instead — the Python script itself is cross-platform.
 
 ---
 
 ## Troubleshooting
 
-**"credentials.json not found"** — You didn't complete step 3. Download the OAuth client JSON from Google Cloud Console and name it `credentials.json`.
+**"DISCORD_BOT_TOKEN not set"** — You haven't filled in `.env`. Do step 5.
 
-**"Access blocked: [app] has not completed the Google verification process"** — You're trying to sign in with a Gmail account that isn't listed in the OAuth consent screen's **Test users** list. Add it there.
+**"Channel 12345 not visible to the bot"** — Either the bot isn't invited to the server, or the channel ID is wrong. Redo steps 2 and 3.
 
-**Browser opens but sign-in fails / page hangs** — Some corporate Google accounts block OAuth for unverified apps. Use a personal Gmail instead.
+**"Access blocked: [app] has not completed the Google verification process"** — Your Gmail address isn't in the OAuth consent screen's **Test users** list. Add it.
 
-**Forwarded message is missing the snippet** — Gmail doesn't generate a preview for every message (e.g., purely HTML emails with no plain-text part). The script shows "*(no preview available)*" in that case.
+**Bot posts emails but the Reply button does nothing** — Check `bot.log` for errors. Most likely cause: the bot token is missing `applications.commands` scope in its invite URL. Re-invite with the correct scopes from step 2.
 
-**Stop forwarding temporarily** — Just Ctrl+C. Your `seen_ids.json` remembers what's been sent, so when you restart you won't get duplicates.
+**"Failed to send reply: insufficient_scope"** — Your `token.json` still has the old readonly-only scopes. Delete `token.json` and run again to re-authenticate.
 
-**Reset the bot** — Delete `token.json` (to re-auth) and/or `seen_ids.json` (to re-prime the seen set on next run).
+**Stop the headless bot** — `Stop-Process -Name pythonw`
 
 ---
 
 ## Security notes
 
-- `credentials.json`, `token.json`, and `.env` contain sensitive info and are gitignored.
-- The OAuth scope requested is `gmail.readonly` — the script **cannot** send, delete, or modify your mail.
-- Your Discord webhook URL is also a secret — anyone with it can post to your channel.
-- If you ever accidentally commit any of these files, revoke them immediately:
-  - Discord webhook: delete it in Server Settings → Integrations → Webhooks
-  - Google OAuth token: revoke at <https://myaccount.google.com/permissions>
+- Your bot token, OAuth credentials, and saved token are all gitignored
+- The Gmail scopes used are `gmail.readonly` + `gmail.send` — the bot can read incoming mail and send as you, but **cannot** delete or modify existing messages
+- If you ever leak your bot token, immediately **Reset Token** in the Discord Developer Portal — the old token becomes useless instantly
+- Same for `credentials.json` / `token.json`: revoke at <https://myaccount.google.com/permissions>
 
 ---
 
 ## Ideas for later
 
-- Filter by sender/subject (only forward important stuff)
-- Forward the full email body instead of the snippet
-- Deploy to a Raspberry Pi, Fly.io, or Oracle free tier so it runs 24/7
-- Replace polling with Gmail Push notifications via Google Pub/Sub (instant delivery)
+- Filter by sender/subject (only forward important mail)
+- Add an "Archive" button next to Reply
+- Full-body email support (currently shows Gmail's short snippet)
+- Deploy to a Raspberry Pi or cloud host so it runs 24/7 without your PC
