@@ -333,6 +333,57 @@ def render_body_markdown(html: str, plain: str) -> str:
     return "*(no body)*"
 
 
+BUTTON_TEXT_WHITELIST = {
+    "verify", "verify email",
+    "confirm", "confirm email",
+    "view order", "view invoice", "view receipt",
+    "reset password",
+    "sign in", "log in", "login",
+    "accept", "decline",
+    "activate",
+    "get started",
+    "download",
+    "open",
+}
+
+
+def _looks_like_button_style(style: str | None) -> bool:
+    """Heuristic: <a> with both background-color and padding is almost always a CTA button."""
+    if not style:
+        return False
+    s = style.lower()
+    return "background-color" in s and "padding" in s
+
+
+def extract_action_buttons(html: str) -> list[tuple[str, str]]:
+    """Return a list of (label, href) tuples for action-button-like <a> tags.
+
+    De-duplicated by href, preserving first-seen order. Capped at MAX_BUTTONS_PER_EMAIL.
+    """
+    if not html.strip():
+        return []
+    soup = BeautifulSoup(html, "html.parser")
+    seen: set[str] = set()
+    out: list[tuple[str, str]] = []
+    for a in soup.find_all("a"):
+        href = (a.get("href") or "").strip()
+        if not href.lower().startswith(("http://", "https://")):
+            continue
+        if href in seen:
+            continue
+        label = a.get_text(strip=True)
+        if not label:
+            continue
+        is_button = _looks_like_button_style(a.get("style"))
+        if not is_button and label.lower() not in BUTTON_TEXT_WHITELIST:
+            continue
+        seen.add(href)
+        out.append((label[:80], href))
+        if len(out) >= MAX_BUTTONS_PER_EMAIL:
+            break
+    return out
+
+
 # ----- Reply sending -----
 
 def _extract_email_address(from_header: str) -> str:
