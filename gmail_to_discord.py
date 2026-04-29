@@ -10,6 +10,7 @@ import base64
 import json
 import os
 import sys
+from dataclasses import dataclass, field
 from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
@@ -40,6 +41,35 @@ GMAIL_BLUE = 0x4285F4
 MAX_SEEN_IDS = 500
 MAX_LOG_BYTES = 500_000
 INBOX_FETCH_COUNT = 25
+MAX_IMAGES_PER_EMAIL = 9          # Discord limit is 10 attachments; one slot reserved for the .html
+MAX_BUTTONS_PER_EMAIL = 10        # Discord allows 25 components; we keep budget for the Reply button
+MAX_REMOTE_IMAGE_FETCHES = 20     # cap to keep poll latency bounded
+REMOTE_IMAGE_TIMEOUT = 5          # seconds
+MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024  # Discord free-tier per-file limit
+EMBED_DESCRIPTION_LIMIT = 4000    # safe under Discord's 4096 limit
+BODY_TRUNCATION_MARKER = "\n\n*[…full email attached as .html below]*"
+
+
+@dataclass
+class ImageBlob:
+    filename: str
+    mime: str
+    data: bytes
+
+
+@dataclass
+class EmailContent:
+    msg_id: str
+    thread_id: str
+    subject: str
+    from_addr: str
+    to: str
+    date: str
+    message_id_header: str
+    text_body: str = ""
+    html_body: str = ""
+    inline_images: list[ImageBlob] = field(default_factory=list)
+    attached_images: list[ImageBlob] = field(default_factory=list)
 
 
 # ----- Logging -----
@@ -143,6 +173,96 @@ def get_message_details(service, msg_id: str) -> dict:
         "message_id_header": headers.get("message-id", ""),
         "snippet": msg.get("snippet", ""),
     }
+
+
+def _decode_part_body(part: dict) -> bytes:
+    """Decode the inline body data of a single MIME part. Returns b'' if absent."""
+    body = part.get("body") or {}
+    data = body.get("data")
+    if not data:
+        return b""
+    return base64.urlsafe_b64decode(data.encode("ascii"))
+
+
+def _fetch_attachment_bytes(service, msg_id: str, attachment_id: str) -> bytes:
+    """Fetch a Gmail attachment by ID and return its raw bytes."""
+    att = (
+        service.users()
+        .messages()
+        .attachments()
+        .get(userId="me", messageId=msg_id, id=attachment_id)
+        .execute()
+    )
+    return base64.urlsafe_b64decode(att["data"].encode("ascii"))
+
+
+def _walk_payload(service, msg_id: str, payload: dict, content: "EmailContent") -> None:
+    """Recursively walk a Gmail MIME payload, populating EmailContent in place."""
+    mime_type = (payload.get("mimeType") or "").lower()
+    parts = payload.get("parts") or []
+    headers = {h["name"].lower(): h["value"] for h in payload.get("headers", [])}
+    filename = payload.get("filename") or ""
+    body = payload.get("body") or {}
+    attachment_id = body.get("attachmentId")
+
+    if parts:
+        for part in parts:
+            _walk_payload(service, msg_id, part, content)
+        return
+
+    # Leaf node from here.
+    if mime_type == "text/plain" and not content.text_body:
+        content.text_body = _decode_part_body(payload).decode("utf-8", errors="replace")
+        return
+
+    if mime_type == "text/html" and not content.html_body:
+        content.html_body = _decode_part_body(payload).decode("utf-8", errors="replace")
+        return
+
+    if mime_type.startswith("image/"):
+        try:
+            if attachment_id:
+                data = _fetch_attachment_bytes(service, msg_id, attachment_id)
+            else:
+                data = _decode_part_body(payload)
+        except Exception as e:
+            log(f"[warn] could not fetch image part for {msg_id}: {e}")
+            return
+        if not data:
+            return
+        is_inline = "content-id" in headers or "x-attachment-id" in headers
+        blob = ImageBlob(
+            filename=filename or f"image-{len(content.inline_images) + len(content.attached_images) + 1}",
+            mime=mime_type,
+            data=data,
+        )
+        if is_inline:
+            content.inline_images.append(blob)
+        else:
+            content.attached_images.append(blob)
+
+
+def fetch_full_email_content(service, msg_id: str) -> "EmailContent":
+    """Fetch the full email and return its parsed body + images."""
+    msg = (
+        service.users()
+        .messages()
+        .get(userId="me", id=msg_id, format="full")
+        .execute()
+    )
+    payload = msg.get("payload") or {}
+    headers = {h["name"].lower(): h["value"] for h in payload.get("headers", [])}
+    content = EmailContent(
+        msg_id=msg_id,
+        thread_id=msg.get("threadId", ""),
+        subject=headers.get("subject", "(no subject)"),
+        from_addr=headers.get("from", "(unknown sender)"),
+        to=headers.get("to", ""),
+        date=headers.get("date", ""),
+        message_id_header=headers.get("message-id", ""),
+    )
+    _walk_payload(service, msg_id, payload, content)
+    return content
 
 
 def fetch_new_inbox_ids(service, seen: set[str]) -> list[str]:
