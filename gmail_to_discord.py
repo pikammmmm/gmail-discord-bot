@@ -16,6 +16,7 @@ from email.message import EmailMessage
 from pathlib import Path
 
 import discord
+import requests
 from discord.ext import tasks
 from dotenv import load_dotenv
 from google.auth.exceptions import RefreshError
@@ -353,6 +354,71 @@ def _looks_like_button_style(style: str | None) -> bool:
         return False
     s = style.lower()
     return "background-color" in s and "padding" in s
+
+
+def _fetch_remote_image(url: str) -> "ImageBlob | None":
+    """Best-effort download of a remote <img src>. Returns None on any failure."""
+    try:
+        resp = requests.get(url, timeout=REMOTE_IMAGE_TIMEOUT, stream=True)
+    except requests.RequestException as e:
+        log(f"[warn] remote image fetch failed for {url}: {e}")
+        return None
+    if resp.status_code != 200:
+        return None
+    ctype = (resp.headers.get("Content-Type") or "").lower()
+    if not ctype.startswith("image/"):
+        return None
+    data = resp.content
+    if not data or len(data) > MAX_ATTACHMENT_BYTES:
+        return None
+    tail = url.rsplit("/", 1)[-1].split("?", 1)[0] or "remote-image"
+    if "." not in tail:
+        ext = ctype.split("/", 1)[-1].split(";", 1)[0] or "bin"
+        tail = f"{tail}.{ext}"
+    return ImageBlob(filename=tail, mime=ctype, data=data)
+
+
+def collect_images(content: "EmailContent") -> tuple[list["ImageBlob"], int]:
+    """Return (image list, dropped count). Order: inline -> attached -> remote.
+
+    Inline + attached images already have their bytes. Remote <img src> URLs are fetched
+    fresh, capped at MAX_REMOTE_IMAGE_FETCHES attempts. Final list capped at
+    MAX_IMAGES_PER_EMAIL; the dropped count is everything that didn't fit.
+    """
+    images: list[ImageBlob] = []
+    images.extend(content.inline_images)
+    images.extend(content.attached_images)
+
+    remote_urls: list[str] = []
+    if content.html_body.strip():
+        soup = BeautifulSoup(content.html_body, "html.parser")
+        for img in soup.find_all("img"):
+            src = (img.get("src") or "").strip()
+            if src.lower().startswith(("http://", "https://")):
+                remote_urls.append(src)
+
+    dedup_remote: list[str] = []
+    seen: set[str] = set()
+    for u in remote_urls:
+        if u not in seen:
+            seen.add(u)
+            dedup_remote.append(u)
+
+    fetched = 0
+    for url in dedup_remote:
+        if fetched >= MAX_REMOTE_IMAGE_FETCHES:
+            break
+        fetched += 1
+        blob = _fetch_remote_image(url)
+        if blob is not None:
+            images.append(blob)
+
+    images = [img for img in images if len(img.data) <= MAX_ATTACHMENT_BYTES]
+
+    if len(images) > MAX_IMAGES_PER_EMAIL:
+        dropped = len(images) - MAX_IMAGES_PER_EMAIL
+        return images[:MAX_IMAGES_PER_EMAIL], dropped
+    return images, 0
 
 
 def extract_action_buttons(html: str) -> list[tuple[str, str]]:
