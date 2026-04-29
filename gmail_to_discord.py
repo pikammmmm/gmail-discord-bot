@@ -7,6 +7,7 @@ a reply; submitting it sends a properly threaded reply via the Gmail API.
 
 import asyncio
 import base64
+import io
 import json
 import os
 import sys
@@ -646,12 +647,12 @@ class GmailBot(discord.Client):
             for msg_id in reversed(new_ids):
                 try:
                     email = await loop.run_in_executor(
-                        None, get_message_details, self.gmail_service, msg_id
+                        None, fetch_full_email_content, self.gmail_service, msg_id
                     )
                     await self._post_email(self._destination, email)
                     self.seen.add(msg_id)
                     sent += 1
-                    log(f"[sent] {email['from']} - {email['subject']}")
+                    log(f"[sent] {email.from_addr} - {email.subject}")
                 except Exception as e:
                     log(f"[error] processing {msg_id}: {e}")
             if sent:
@@ -664,30 +665,79 @@ class GmailBot(discord.Client):
     async def _before_poll_loop(self) -> None:
         await self.wait_until_ready()
 
-    async def _post_email(self, destination, email: dict) -> None:
-        subject = (email["subject"] or "(no subject)")[:256]
-        snippet = (email["snippet"] or "*(no preview available)*")[:2000]
+    async def _post_email(self, destination, email: EmailContent) -> None:
+        loop = asyncio.get_running_loop()
+
+        body_md = await loop.run_in_executor(
+            None, render_body_markdown, email.html_body, email.text_body
+        )
+        buttons = await loop.run_in_executor(
+            None, extract_action_buttons, email.html_body
+        )
+        images, dropped_images = await loop.run_in_executor(
+            None, collect_images, email
+        )
+
+        truncated = False
+        if len(body_md) > EMBED_DESCRIPTION_LIMIT:
+            body_md = body_md[: EMBED_DESCRIPTION_LIMIT - len(BODY_TRUNCATION_MARKER)]
+            truncated = True
+
+        description = body_md
+        if truncated:
+            description += BODY_TRUNCATION_MARKER
+
+        overflow_notes: list[str] = []
+        if dropped_images:
+            overflow_notes.append(f"+{dropped_images} more images")
+
+        if overflow_notes:
+            extra = "_" + " / ".join(overflow_notes) + " in attached HTML_"
+            if len(description) + len(extra) + 2 <= 4096:
+                description += "\n\n" + extra
 
         embed = discord.Embed(
-            title=subject,
-            description=snippet,
+            title=(email.subject or "(no subject)")[:256],
+            description=description or "*(no body)*",
             color=GMAIL_BLUE,
         )
-        embed.add_field(name="From", value=email["from"][:1024], inline=False)
-        if email["date"]:
-            embed.set_footer(text=email["date"][:2048])
+        embed.add_field(name="From", value=email.from_addr[:1024], inline=False)
+        if email.date:
+            embed.set_footer(text=email.date[:2048])
+        if images:
+            embed.set_image(url=f"attachment://{images[0].filename}")
+
+        html_payload = email.html_body or f"<pre>{(email.text_body or '(no body)')}</pre>"
+        files: list[discord.File] = [
+            discord.File(
+                fp=io.BytesIO(html_payload.encode("utf-8")),
+                filename=f"email-{email.msg_id}.html",
+            )
+        ]
+        for img in images:
+            files.append(
+                discord.File(fp=io.BytesIO(img.data), filename=img.filename)
+            )
 
         view = discord.ui.View(timeout=None)
         view.add_item(
             discord.ui.Button(
                 label="Reply",
                 style=discord.ButtonStyle.primary,
-                emoji="\U0001F4E8",  # 📨
-                custom_id=f"reply:{email['id']}",
+                emoji="\U0001F4E8",
+                custom_id=f"reply:{email.msg_id}",
             )
         )
+        for label, href in buttons:
+            view.add_item(
+                discord.ui.Button(
+                    label=label,
+                    style=discord.ButtonStyle.link,
+                    url=href,
+                )
+            )
 
-        await destination.send(embed=embed, view=view)
+        await destination.send(embed=embed, view=view, files=files)
 
 
 # ----- Entry point -----
