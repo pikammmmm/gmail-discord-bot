@@ -295,6 +295,44 @@ def prime_seen_on_first_run(service, seen: set[str]) -> None:
     log(f"[init] Marked {len(seen)} existing messages as seen")
 
 
+# ----- HTML processing -----
+
+import html2text as _html2text  # late import keeps top-of-file tidy
+from bs4 import BeautifulSoup
+
+
+def _strip_cid_and_remote_images(soup: BeautifulSoup) -> None:
+    """Remove all <img> tags. Inline (cid:) images become Discord file attachments,
+    and remote images are also attached separately, so neither belongs in the body.
+    """
+    for img in soup.find_all("img"):
+        img.decompose()
+
+
+def _make_h2t() -> _html2text.HTML2Text:
+    h = _html2text.HTML2Text()
+    h.body_width = 0
+    h.ignore_images = True
+    h.ignore_links = False
+    h.protect_links = True
+    h.single_line_break = True
+    return h
+
+
+def render_body_markdown(html: str, plain: str) -> str:
+    """Return a Discord-friendly markdown rendering of the email body."""
+    if html.strip():
+        soup = BeautifulSoup(html, "html.parser")
+        _strip_cid_and_remote_images(soup)
+        text = _make_h2t().handle(str(soup))
+        text = text.strip()
+        if text:
+            return text
+    if plain.strip():
+        return plain.strip()
+    return "*(no body)*"
+
+
 # ----- Reply sending -----
 
 def _extract_email_address(from_header: str) -> str:
