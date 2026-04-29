@@ -268,11 +268,20 @@ def fetch_full_email_content(service, msg_id: str) -> "EmailContent":
 
 
 def fetch_new_inbox_ids(service, seen: set[str]) -> list[str]:
-    """Return IDs of recent inbox messages we haven't seen yet."""
+    """Return IDs of recent inbox messages we haven't seen yet.
+
+    Excludes Gmail's Promotions tab so newsletters / ads aren't forwarded.
+    Spam is already excluded since it's not in INBOX.
+    """
     result = (
         service.users()
         .messages()
-        .list(userId="me", labelIds=["INBOX"], maxResults=INBOX_FETCH_COUNT)
+        .list(
+            userId="me",
+            labelIds=["INBOX"],
+            q="-category:promotions",
+            maxResults=INBOX_FETCH_COUNT,
+        )
         .execute()
     )
     messages = result.get("messages", [])
