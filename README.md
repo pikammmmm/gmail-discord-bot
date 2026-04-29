@@ -16,8 +16,10 @@ A Python Discord bot that watches your Gmail inbox and posts new messages to a D
 
 ## What you get
 
-- New emails appear in Discord within ~60 seconds as blue embeds (subject, sender, preview, date)
-- A **Reply** button on every message
+- New emails appear in Discord within ~60 seconds as blue embeds
+- The **full email body** is rendered (HTML → markdown), with the original HTML attached as a `.html` file you can open in your browser
+- Inline images, attachments, and remote `<img>` images are downloaded and attached to the Discord message
+- Email action buttons (e.g. "Verify email", "View order") appear as real Discord link buttons next to **📨 Reply**
 - Clicking Reply opens a Discord popup with a single body field — the subject is auto-set to `Re: [original]`
 - Sending posts the reply into the **same Gmail thread**, so the other person sees a real reply, not a new email
 - First run marks your current inbox as "seen", so it won't spam you with historical mail
@@ -226,5 +228,4 @@ Start-Process ".\.venv\Scripts\pythonw.exe" -ArgumentList "gmail_to_discord.py"
 
 - Filter by sender/subject (only forward important mail)
 - Add an "Archive" button next to Reply
-- Full-body email support (currently shows Gmail's short snippet)
 - Deploy to a Raspberry Pi or cloud host so it runs 24/7 without your PC
